@@ -1,8 +1,8 @@
 // Global variables
-var FileName = 'credentials';
+var DefaultFileName = 'credentials';
 var ApplySessionDuration = true;
 var DebugLogs = false;
-var RoleArns = {};
+var Roles = {};
 var LF = '\n';
 
 // When this background process starts, load variables from chrome storage 
@@ -84,11 +84,9 @@ function onBeforeRequestEvent(details) {
   domDoc = parser.parseFromString(samlXmlDoc, "text/xml");
   // Get a list of claims (= AWS roles) from the SAML assertion
   var roleDomNodes = domDoc.querySelectorAll('[Name="https://aws.amazon.com/SAML/Attributes/Role"]')[0].childNodes
-  // Parse the PrincipalArn and the RoleArn from the SAML Assertion.
-  var PrincipalArn = '';
-  var RoleArn = '';
+  // Parse the SAML dom
   var SAMLAssertion = undefined;
-  var SessionDuration = domDoc.querySelectorAll('[Name="https://aws.amazon.com/SAML/Attributes/SessionDuration"]')[0]
+  var SAMLSessionDuration = domDoc.querySelectorAll('[Name="https://aws.amazon.com/SAML/Attributes/SessionDuration"]')[0]
   var hasRoleIndex = false;
   var roleIndex = undefined;
   if (details.requestBody.formData) {
@@ -104,11 +102,11 @@ function onBeforeRequestEvent(details) {
   }
 
   // Only set the SessionDuration if it was supplied by the SAML provider and 
-  // when the user has configured to use this feature.
-  if (SessionDuration !== undefined && ApplySessionDuration) {
-    SessionDuration = Number(SessionDuration.firstElementChild.textContent)
+  // when the user has configured to use this feature or if a custom value is provided
+  if (SAMLSessionDuration !== undefined && ApplySessionDuration) {
+    SAMLSessionDuration = Number(SAMLSessionDuration.firstElementChild.textContent)
   } else {
-    SessionDuration = null;
+    SAMLSessionDuration = null;
   }
 
   // Change newline sequence when client is on Windows
@@ -118,9 +116,13 @@ function onBeforeRequestEvent(details) {
 
   if (DebugLogs) {
     console.log('ApplySessionDuration: ' + ApplySessionDuration);
-    console.log('SessionDuration: ' + SessionDuration);
+    console.log('SAMLSessionDuration: ' + SAMLSessionDuration);
     console.log('hasRoleIndex: ' + hasRoleIndex);
     console.log('roleIndex: ' + roleIndex);
+    console.log('Custom Roles: ')
+    for (var arn in Roles){
+      console.log('\tCustom Role: arn - ' + arn + '; file - ' + Roles[arn]["File"] + '; session duration - ' + Roles[arn]["SessionDuration"] + ';')
+    }
   }
   
    // If there is more than 1 role in the claim, look at the 'roleIndex' HTTP Form data parameter to determine the role to assume
@@ -130,7 +132,7 @@ function onBeforeRequestEvent(details) {
       if (nodeValue.indexOf(roleIndex) > -1) {
         // This DomNode holdes the data for the role to assume. Use these details for the assumeRoleWithSAML API call
 		    // The Role Attribute from the SAMLAssertion (DomNode) plus the SAMLAssertion itself is given as function arguments.
-		    extractPrincipalPlusRoleAndAssumeRole(nodeValue, SAMLAssertion, SessionDuration)
+		    extractPrincipalPlusRoleAndAssumeRole(nodeValue, SAMLAssertion, SAMLSessionDuration)
       }
     }
   }
@@ -138,7 +140,7 @@ function onBeforeRequestEvent(details) {
   else if (roleDomNodes.length == 1) {
     // When there is just 1 role in the claim, use these details for the assumeRoleWithSAML API call
 	  // The Role Attribute from the SAMLAssertion (DomNode) plus the SAMLAssertion itself is given as function arguments.
-	  extractPrincipalPlusRoleAndAssumeRole(roleDomNodes[0].innerHTML, SAMLAssertion, SessionDuration)
+	  extractPrincipalPlusRoleAndAssumeRole(roleDomNodes[0].innerHTML, SAMLAssertion, SAMLSessionDuration)
   }
 }
 
@@ -148,7 +150,7 @@ function onBeforeRequestEvent(details) {
 // Gets a Role Attribute from a SAMLAssertion as function argument. Gets the SAMLAssertion as a second argument.
 // This function extracts the RoleArn and PrincipalArn (SAML-provider)
 // from this argument and uses it to call the AWS STS assumeRoleWithSAML API.
-function extractPrincipalPlusRoleAndAssumeRole(samlattribute, SAMLAssertion, SessionDuration) {
+function extractPrincipalPlusRoleAndAssumeRole(samlattribute, SAMLAssertion, SAMLSessionDuration) {
 	// Pattern for Role
 	var reRole = /arn:aws:iam:[^:]*:[0-9]+:role\/[^,]+/i;
 	// Patern for Principal (SAML Provider)
@@ -162,14 +164,23 @@ function extractPrincipalPlusRoleAndAssumeRole(samlattribute, SAMLAssertion, Ses
     console.log('PrincipalArn: ' + PrincipalArn);
   }
 
+  // Get custom file and session duration if specified for this role
+  var customFile = null;
+  var customSessionDuration = null;
+  if (RoleArn in Roles) {
+    customFile = Roles[RoleArn]["File"];
+    customSessionDuration = Number(Roles[RoleArn]["SessionDuration"]);
+  }
+
 	// Set parameters needed for assumeRoleWithSAML method
 	var params = {
 		PrincipalArn: PrincipalArn,
 		RoleArn: RoleArn,
 		SAMLAssertion: SAMLAssertion
-	};
-  if (SessionDuration !== null) {
-    params['DurationSeconds'] = SessionDuration;
+  };
+  var sessionDuration = SAMLSessionDuration !== null ? SAMLSessionDuration : customSessionDuration
+  if (sessionDuration !== null) {
+    params['DurationSeconds'] = sessionDuration;
   }
 
 	// Call STS API from AWS
@@ -189,76 +200,19 @@ function extractPrincipalPlusRoleAndAssumeRole(samlattribute, SAMLAssertion, Ses
         console.log(docContent);
       }
 
-			// If there are no Role ARNs configured in the options panel, continue to create credentials file
-			// Otherwise, extend docContent with a profile for each specified ARN in the options panel
-			if (Object.keys(RoleArns).length == 0) {
-				console.log('Generate AWS tokens file.');
-				outputDocAsDownload(docContent);
-			} else {
-        if (DebugLogs) console.log('DEBUG: Additional Role ARNs are configured');
-				var profileList = Object.keys(RoleArns);
-				console.log('INFO: Do additional assume-role for role -> ' + RoleArns[profileList[0]]);
-				assumeAdditionalRole(profileList, 0, data.Credentials.AccessKeyId, data.Credentials.SecretAccessKey, data.Credentials.SessionToken, docContent, SessionDuration);
-			}
+      outputDocAsDownload(docContent, customFile);
 		}        
 	});
 }
 
-
-// Will fetch additional STS keys for 1 role from the RoleArns dict
-// The assume-role API is called using the credentials (STS keys) fetched using the SAML claim. Basically the default profile.
-function assumeAdditionalRole(profileList, index, AccessKeyId, SecretAccessKey, SessionToken, docContent, SessionDuration) {
-	// Set the fetched STS keys from the SAML response as credentials for doing the API call
-	var options = {'accessKeyId': AccessKeyId, 'secretAccessKey': SecretAccessKey, 'sessionToken': SessionToken};
-	var sts = new AWS.STS(options);
-	// Set the parameters for the AssumeRole API call. Meaning: What role to assume
-	var params = {
-		RoleArn: RoleArns[profileList[index]],
-		RoleSessionName: profileList[index]
-	};
-  if (SessionDuration !== null) {
-    params['DurationSeconds'] = SessionDuration;
-  }
+// Called from either extractPrincipalPlusRoleAndAssumeRole 
+function outputDocAsDownload(docContent, customFile) {
+  var fileName = customFile !== null ? customFile : DefaultFileName;
 
   if (DebugLogs) {
-    console.log('RoleArn: ' + RoleArns[profileList[index]]);
-    console.log('RoleSessionName: ' + profileList[index]);
-  }
-
-	// Call the API
-	sts.assumeRole(params, function(err, data) {
-		if (err) console.log(err, err.stack); // an error occurred
-		else {
-			docContent += LF + LF +
-			"[" + profileList[index] + "]" + LF +
-			"aws_access_key_id = " + data.Credentials.AccessKeyId + LF +
-			"aws_secret_access_key = " + data.Credentials.SecretAccessKey + LF +
-      "aws_session_token = " + data.Credentials.SessionToken;
-      
-      if (DebugLogs) {
-        console.log('DEBUG: Successfully assumed additional Role');
-        console.log('docContent:');
-        console.log(docContent);
-      }
-		}
-		// If there are more profiles/roles in the RoleArns dict, do another call of assumeAdditionalRole to extend the docContent with another profile
-		// Otherwise, this is the last profile/role in the RoleArns dict. Proceed to creating the credentials file
-		if (index < profileList.length - 1) {
-			console.log('INFO: Do additional assume-role for role -> ' + RoleArns[profileList[index + 1]]);
-			assumeAdditionalRole(profileList, index + 1, AccessKeyId, SecretAccessKey, SessionToken, docContent);
-		} else {
-			outputDocAsDownload(docContent);
-		}
-	});
-}
-
-
-
-// Called from either extractPrincipalPlusRoleAndAssumeRole (if RoleArns dict is empty)
-// Otherwise called from assumeAdditionalRole as soon as all roles from RoleArns have been assumed 
-function outputDocAsDownload(docContent) {
-  if (DebugLogs) {
-    console.log('DEBUG: Now going to download credentials file. Document content:');
+    console.log('DEBUG: Now going to download credentials file.');
+    console.log('File name: ' + fileName);
+    console.log('DocContent: ');
     console.log(docContent);
   }
   var doc = URL.createObjectURL( new Blob([docContent], {type: 'application/octet-binary'}) );
@@ -266,7 +220,7 @@ function outputDocAsDownload(docContent) {
     console.log('DEBUG: Blob URL:' + doc);
   }
   // Triggers download of the generated file
-	chrome.downloads.download({ url: doc, filename: FileName, conflictAction: 'overwrite', saveAs: false });
+	chrome.downloads.download({ url: doc, filename: fileName, conflictAction: 'overwrite', saveAs: false });
 }
 
 
@@ -299,12 +253,12 @@ chrome.runtime.onMessage.addListener(
 
 function loadItemsFromStorage() {
   chrome.storage.sync.get({
-    FileName: 'credentials',
+    DefaultFileName: 'credentials',
     ApplySessionDuration: 'yes',
     DebugLogs: 'no',
-    RoleArns: {}
+    Roles: {}
   }, function(items) {
-    FileName = items.FileName;
+    DefaultFileName = items.DefaultFileName;
     if (items.ApplySessionDuration == "no") {
       ApplySessionDuration = false;
     } else {
@@ -315,6 +269,6 @@ function loadItemsFromStorage() {
     } else {
       DebugLogs = true;
     }
-    RoleArns = items.RoleArns;
+    Roles = items.Roles;
   });
 }
