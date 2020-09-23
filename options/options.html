@@ -19,9 +19,9 @@
 	
 	<div id="divSettings">
 		<div id="divFilename" class="setting-part">
-			<label>Filename for writing the fetched AWS STS keys. File will be written to Chrome's download directory. Example filename: credentials</label>
+			<label>Default Filename for writing the fetched AWS STS keys. File will be written to Chrome's download directory. Example filename: credentials</label>
 			<br />
-			<input type="text" name="FileName" id="FileName" size="40">
+			<input type="text" name="DefaultFileName" id="DefaultFileName" size="40">
 		</div>
 
 		<div id="divSessionDuration" class="setting-part">
@@ -43,8 +43,8 @@
 		
 		<div id="divRoles" class="setting-part">
 			<label>[OPTIONAL]</label><br>
-			<label>Specify a list of Role ARN's. For each role the plugin will call the assume-role API. The fetched AWS STS keys will be added to the output file as separate profiles.</label>
-			<div id="role_arns" class="inline-div">
+			<label>Specify a list of Role names with custom files and session durations. When that role is assumed through SSO the plugin will request a session of the given duration and save the credentials under the specified file.</label>
+			<div id="roles" class="inline-div">
 			</div>
 		</div>
 		
