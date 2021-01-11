@@ -183,6 +183,15 @@ function extractPrincipalPlusRoleAndAssumeRole(samlattribute, SAMLAssertion, SAM
     params['DurationSeconds'] = sessionDuration;
   }
 
+  if(DebugLogs) {
+    console.log('AssumeRoleWithSAML params:' );
+    console.log('PrincipalArn: ' + PrincipalArn);
+    console.log('RoleArn: ' + RoleArn);
+    if (sessionDuration !== null) {
+      console.log('DurationSeconds: ' + sessionDuration);
+    }
+  }
+  
 	// Call STS API from AWS
 	var sts = new AWS.STS();
 	sts.assumeRoleWithSAML(params, function(err, data) {
